@@ -1,4 +1,4 @@
-package dockercontainer
+package containerhandler
 
 import (
 	"context"
@@ -51,14 +51,14 @@ func ListImages() {
 }
 
 // working
-func RunContainerFromImageInBackground(image_name string, networkName string, container_name string) {
+func RunContainerFromImageInBackground(image_name string, networkName string, container_name string) string {
 	ctx := context.Background()
 
 	// Create a Docker client
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		fmt.Printf("Error creating Docker client: %v\n", err)
-		return
+		return ""
 	}
 
 	// Define the name of the existing image
@@ -71,7 +71,7 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 	networkList, err := cli.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
 		fmt.Printf("Error listing Docker networks: %v\n", err)
-		return
+		return ""
 	}
 
 	networkExists := false
@@ -84,7 +84,7 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 
 	if !networkExists {
 		fmt.Printf("Network %s does not exist. Please create it first.\n", customNetwork)
-		return
+		return ""
 	}
 
 	// Create the container
@@ -104,7 +104,7 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
 		fmt.Printf("Error creating container: %v\n", err)
-		return
+		return ""
 	}
 
 	fmt.Printf("Container %s created with ID: %s\n", containerName, resp.ID)
@@ -112,10 +112,11 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 	// Start the container
 	if err := cli.ContainerStart(ctx, resp.ID, containertypes.StartOptions{}); err != nil {
 		fmt.Printf("Error starting container: %v\n", err)
-		return
+		return ""
 	}
 
 	fmt.Printf("Container %s started successfully in network %s.\n", containerName, customNetwork)
+	return resp.ID
 }
 
 // working

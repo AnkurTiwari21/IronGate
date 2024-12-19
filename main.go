@@ -1,14 +1,16 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 
 	// dockercontainer "github.com/AnkurTiwari21/DockerContainer"
-	proxy "github.com/AnkurTiwari21/Proxy"
+	"github.com/AnkurTiwari21/containerhandler"
+	proxy "github.com/AnkurTiwari21/proxy"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
@@ -18,7 +20,7 @@ func main() {
 	//make any instance of the reverse proxy
 	rp := proxy.ReverseProxy{
 		Routes: map[string][]string{
-			"localhost": {"my-container"},
+			"localhost:8080": {"my-container"},
 		},
 	}
 	//basic http listener to listen at all the path and we will redirect the traffic based on subdomain
@@ -28,12 +30,12 @@ func main() {
 		// check if this domain is registered in the proxy
 		requestedHost := c.Request.Host
 		path := c.Request.RequestURI
-		hostArray := strings.Split(requestedHost, ":")
+		// hostArray := strings.Split(requestedHost, ":")
 
 		logrus.Info(requestedHost)
 
-		if rp.Routes[hostArray[0]] != nil {
-			matchMakingAndCommunicate(c, requestedHost, path)
+		if rp.Routes[requestedHost] != nil {
+			matchMakingAndCommunicate(c, requestedHost, path, &rp)
 		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"message": "route not found",
@@ -42,43 +44,90 @@ func main() {
 	})
 
 	r.Run(":8080")
-	// dockercontainer.ListImages()
-	// dockercontainer.RunContainerFromImageInBackground()
-	// dockercontainer.ListContainer()
-	// dockercontainer.StopContainerByIdOrName("core")
-	// dockercontainer.RunContainerFromImageInBackground()
 }
 
-func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string) {
-	// Define the address of the Gin server
-	address := "http://localhost:5050" // Use HTTP for communication
+func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string, rp *proxy.ReverseProxy) {
+	targetAddress := "http://localhost:5050" + path
+	client := http.Client{}
 
-	// Send an HTTP GET request
-	resp, err := http.Get(address)
+	req, err := http.NewRequest(c.Request.Method, targetAddress, c.Request.Body)
 	if err != nil {
-		fmt.Printf("Error sending HTTP request: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to communicate with the server",
-		})
+		logrus.Errorf("Error creating request: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create request"})
+		return
+	}
+
+	for header, values := range c.Request.Header {
+		for _, value := range values {
+			req.Header.Add(header, value)
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		logrus.Errorf("Error forwarding request: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "Failed to forward request"})
 		return
 	}
 	defer resp.Body.Close()
 
-	// Read the response
-	body, err := io.ReadAll(resp.Body)
+	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		fmt.Printf("Error reading response body: %v\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "Failed to read server response",
-		})
+		logrus.Errorf("Error reading response: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to read server response"})
 		return
 	}
 
-	fmt.Printf("Received response from server: %s\n", string(body))
-	c.JSON(http.StatusOK, gin.H{
-		"message":         "route found",
-		"host":            requestedHost,
-		"path":            path,
-		"server_response": string(body),
-	})
+	if path == "/create" {
+		var respBody map[string]interface{}
+		if err := json.Unmarshal(responseBody, &respBody); err != nil {
+			logrus.Errorf("Error unmarshalling response: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process response"})
+			return
+		}
+
+		// Process the "CREATE CONTAINER" operation
+		if op, ok := respBody["operation"].(string); ok && op == "CREATE CONTAINER" {
+			logrus.Info("Performing CREATE CONTAINER operation")
+
+			// Generate container ID and start the container
+			cid := uuid.New()
+			containerId := containerhandler.RunContainerFromImageInBackground("testserver", "ankur-net", cid.String())
+			logrus.Infof("UUID: %s, Container ID: %s", cid, containerId)
+
+			//register it in the reverse proxy
+			rp.Add(containerId+"."+requestedHost, containerId)
+			rp.View()
+
+			if containerId != "" {
+				respBody["id"] = containerId
+			} else {
+				logrus.Error("Error occurred while creating container")
+			}
+		}
+
+		modifiedResponseBody, err := json.Marshal(respBody)
+		if err != nil {
+			logrus.Errorf("Error marshalling modified response: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process response"})
+			return
+		}
+
+		responseBody = modifiedResponseBody
+		logrus.Info("Modified Response:", string(responseBody))
+	}
+
+	for header, values := range resp.Header {
+		for _, value := range values {
+			c.Header(header, value)
+		}
+	}
+
+	// Set the content length beacuse we added id in body and write the response body
+	c.Header("Content-Length", fmt.Sprintf("%d", len(responseBody)))
+	c.Status(resp.StatusCode)
+	_, err = c.Writer.Write(responseBody)
+	if err != nil {
+		logrus.Errorf("Error writing response: %v", err)
+	}
 }
