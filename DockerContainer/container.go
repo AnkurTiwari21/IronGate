@@ -1,17 +1,14 @@
 package dockercontainer
 
 import (
-	"archive/tar"
-	"bytes"
 	"context"
 	"fmt"
-	"io"
-	"os"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 )
 
@@ -34,76 +31,6 @@ func ListContainer() {
 	}
 }
 
-func createTar(filePath string) (io.Reader, error) {
-	buf := new(bytes.Buffer)
-	tw := tar.NewWriter(buf)
-	defer tw.Close()
-
-	file, err := os.Open(filePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open Dockerfile: %v", err)
-	}
-	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat Dockerfile: %v", err)
-	}
-
-	header := &tar.Header{
-		Name: "Dockerfile",
-		Size: stat.Size(),
-		Mode: int64(stat.Mode()),
-	}
-	if err := tw.WriteHeader(header); err != nil {
-		return nil, fmt.Errorf("failed to write tar header: %v", err)
-	}
-
-	if _, err := io.Copy(tw, file); err != nil {
-		return nil, fmt.Errorf("failed to copy Dockerfile to tar: %v", err)
-	}
-
-	return buf, nil
-}
-
-func BuildImage() {
-	ctx := context.Background()
-
-	// Create a Docker client
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		fmt.Printf("Error creating Docker client: %v\n", err)
-		return
-	}
-
-	// Define the path to the Dockerfile
-	dockerfilePath := "./Dockerfile"
-
-	// Create a tar archive containing the Dockerfile
-	dockerfileTar, err := createTar(dockerfilePath)
-	if err != nil {
-		fmt.Printf("Error creating tar archive: %v\n", err)
-		return
-	}
-
-	// Build the image
-	imageName := "my-custom-image:latest"
-	buildResponse, err := cli.ImageBuild(ctx, dockerfileTar, types.ImageBuildOptions{
-		Tags:       []string{imageName},
-		Dockerfile: "Dockerfile", // Name of the Dockerfile
-		Remove:     true,         // Clean up intermediate containers
-	})
-	if err != nil {
-		fmt.Printf("Error building Docker image: %v\n", err)
-		return
-	}
-	defer buildResponse.Body.Close()
-
-	// Print the build response logs
-	io.Copy(os.Stdout, buildResponse.Body)
-	fmt.Println("Docker image built successfully!")
-}
-
 // working
 func ListImages() {
 	ctx := context.Background()
@@ -124,7 +51,7 @@ func ListImages() {
 }
 
 // working
-func RunContainerFromImageInBackground() {
+func RunContainerFromImageInBackground(image_name string, networkName string, container_name string) {
 	ctx := context.Background()
 
 	// Create a Docker client
@@ -135,7 +62,30 @@ func RunContainerFromImageInBackground() {
 	}
 
 	// Define the name of the existing image
-	imageName := "testserver" // Replace with your image name
+	imageName := image_name // Replace with your image name
+
+	// Define your custom network name
+	customNetwork := networkName // Replace with your network name
+
+	// Check if the network exists
+	networkList, err := cli.NetworkList(ctx, types.NetworkListOptions{})
+	if err != nil {
+		fmt.Printf("Error listing Docker networks: %v\n", err)
+		return
+	}
+
+	networkExists := false
+	for _, network := range networkList {
+		if network.Name == customNetwork {
+			networkExists = true
+			break
+		}
+	}
+
+	if !networkExists {
+		fmt.Printf("Network %s does not exist. Please create it first.\n", customNetwork)
+		return
+	}
 
 	// Create the container
 	containerConfig := &container.Config{
@@ -144,9 +94,14 @@ func RunContainerFromImageInBackground() {
 	hostConfig := &container.HostConfig{
 		AutoRemove: true, // Automatically remove the container when it stops
 	}
+	networkingConfig := &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			customNetwork: {}, // Attach the container to the custom network
+		},
+	}
 
-	containerName := "my-container" // Name of the container
-	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, nil, nil, containerName)
+	containerName := container_name // Name of the container
+	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
 		fmt.Printf("Error creating container: %v\n", err)
 		return
@@ -160,11 +115,12 @@ func RunContainerFromImageInBackground() {
 		return
 	}
 
-	fmt.Printf("Container %s started successfully.\n", containerName)
+	fmt.Printf("Container %s started successfully in network %s.\n", containerName, customNetwork)
 }
 
-//working
-func StopContainerById(containerId string) {
+// working
+// pass the container id or container name
+func StopContainerByIdOrName(containerId string) {
 	ctx := context.Background()
 
 	// Create a Docker client
