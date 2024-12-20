@@ -22,7 +22,11 @@ func main() {
 		Routes: map[string][]string{
 			"localhost:8080": {"my-container"},
 		},
+		MatchMaking: map[string]int{
+			"localhost:8080": 0,
+		},
 	}
+
 	//basic http listener to listen at all the path and we will redirect the traffic based on subdomain
 	r := gin.Default()
 
@@ -47,6 +51,8 @@ func main() {
 }
 
 func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string, rp *proxy.ReverseProxy) {
+	targetContainer := rp.FindMatch(requestedHost)
+	logrus.Infof("||Target Container: %s||", targetContainer)
 	targetAddress := "http://localhost:5050" + path
 	client := http.Client{}
 
@@ -97,6 +103,10 @@ func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string
 
 			//register it in the reverse proxy
 			rp.Add(containerId+"."+requestedHost, containerId)
+
+			//the initial pointer will be at 0th index
+			rp.MatchMaking[containerId+"."+requestedHost] = 0
+
 			rp.View()
 
 			if containerId != "" {

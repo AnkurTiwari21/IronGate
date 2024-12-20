@@ -4,7 +4,8 @@ import "github.com/sirupsen/logrus"
 
 // This struct will maintain all the routing info
 type ReverseProxy struct {
-	Routes map[string][]string
+	Routes      map[string][]string
+	MatchMaking map[string]int
 }
 
 func (r *ReverseProxy) Add(url string, containerName string) {
@@ -35,4 +36,13 @@ func (r *ReverseProxy) View() {
 			logrus.Info("containers are ", value)
 		}
 	}
+}
+
+func (r *ReverseProxy) FindMatch(url string) string {
+	//Implemented basic round robin
+	//TODO: what if container is turned off...how to manage the indexing there
+	//TODO: is round robin is good for this case?
+	containerToBeUsedForUrl := r.MatchMaking[url]
+	r.MatchMaking[url] = (containerToBeUsedForUrl + 1) % (len(r.Routes[url]))
+	return r.Routes[url][containerToBeUsedForUrl]
 }
