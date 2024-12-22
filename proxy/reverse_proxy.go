@@ -33,6 +33,20 @@ func (r *ReverseProxy) RemoveRoute(url string) {
 	logrus.Infof("Route %s removed!", url)
 }
 
+func (r *ReverseProxy) RemoveContainer(url string, containerName string) {
+	r.Mu.Lock() // Ensure thread-safety if concurrent access is possible
+	defer r.Mu.Unlock()
+
+	containers := r.Routes[url]
+	for i, val := range containers {
+		if val == containerName {
+			// Remove the container by slicing
+			r.Routes[url] = append(containers[:i], containers[i+1:]...)
+			return
+		}
+	}
+}
+
 func (r *ReverseProxy) Find(url string) bool {
 	for key, _ := range r.Routes {
 		if key == url {
@@ -60,12 +74,13 @@ func (r *ReverseProxy) FindMatch(url string, imageMapping *mapping.ImageMapping)
 
 	avgCPUUsage := float64(0)
 	var containerWithMinCPUUsage string
-	minCPUUsage := float64(100)
+	minCPUUsage := float64(1000)
 
 	for _, conatiner := range r.Routes[url] {
 		cpuUsage, err := containerhandler.MonitorContainerWithID(conatiner)
 		if err != nil {
-			logrus.Errorf("error getting stats for conatiner : %s | err ", conatiner, err)
+			logrus.Errorf("error getting stats for container : %s | err ", conatiner)
+			logrus.Error("error is ", err)
 		} else {
 			avgCPUUsage += (cpuUsage)
 			if cpuUsage <= minCPUUsage {

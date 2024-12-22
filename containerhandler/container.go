@@ -56,29 +56,27 @@ func ListImages() {
 
 // working
 func RunContainerFromImageInBackground(image_name string, networkName string, container_name string) string {
-	logrus.Info("here1")
 	ctx := context.Background()
-	logrus.Info("here2")
 	// Create a Docker client
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		fmt.Printf("Error creating Docker client: %v\n", err)
 		return ""
 	}
-	logrus.Info("here3")
+
 	// Define the name of the existing image
 	imageName := image_name // Replace with your image name
-	logrus.Info("here4")
+
 	// Define your custom network name
 	customNetwork := networkName // Replace with your network name
-	logrus.Info("here5")
+
 	// Check if the network exists
 	networkList, err := cli.NetworkList(ctx, types.NetworkListOptions{})
 	if err != nil {
 		fmt.Printf("Error listing Docker networks: %v\n", err)
 		return ""
 	}
-	logrus.Info("here6")
+
 	networkExists := false
 	for _, network := range networkList {
 		if network.Name == customNetwork {
@@ -86,12 +84,12 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 			break
 		}
 	}
-	logrus.Info("here7")
+
 	if !networkExists {
 		fmt.Printf("Network %s does not exist. Please create it first.\n", customNetwork)
 		return ""
 	}
-	logrus.Info("here8")
+
 	// Create the container
 	containerConfig := &container.Config{
 		Image: imageName, // Specify the image name
@@ -104,23 +102,23 @@ func RunContainerFromImageInBackground(image_name string, networkName string, co
 			customNetwork: {}, // Attach the container to the custom network
 		},
 	}
-	logrus.Info("here9")
+
 	containerName := container_name // Name of the container
 	resp, err := cli.ContainerCreate(ctx, containerConfig, hostConfig, networkingConfig, nil, containerName)
 	if err != nil {
 		fmt.Printf("Error creating container: %v\n", err)
 		return ""
 	}
-	logrus.Info("here10")
+
 	fmt.Printf("Container %s created with ID: %s\n", containerName, resp.ID)
-	logrus.Info("here11")
+
 	// Start the container
 	if err := cli.ContainerStart(ctx, resp.ID, containertypes.StartOptions{}); err != nil {
 		fmt.Printf("Error starting container: %v\n", err)
 		return ""
 	}
-	logrus.Info("here12")
-	time.Sleep(2 * time.Second)
+
+	time.Sleep(2 * time.Second) //for graceful start in case for some delay
 	fmt.Printf("Container %s started successfully in network %s.\n", containerName, customNetwork)
 	return resp.ID
 }
@@ -248,7 +246,7 @@ func MonitorContainerWithID(containerId string) (float64, error) {
 	return cpuPercentage, nil
 }
 
-func scaleDownContainers(containers []string) {
+func ScaleDownContainers(containers []string) (string, float64) {
 	avgCPUUsage := float64(0)
 	var containerWithMinCPUUsage string
 	var minCPUUsage = float64(100)
@@ -259,16 +257,14 @@ func scaleDownContainers(containers []string) {
 			logrus.Error("error in getting stats for the container | err ", err)
 		}
 		avgCPUUsage += (cpuUsage)
-		if cpuUsage < minCPUUsage {
+		if cpuUsage <= minCPUUsage {
 			minCPUUsage = cpuUsage
 			containerWithMinCPUUsage = conatinerId
 		}
 	}
 	if avgCPUUsage < 10 && len(containers) > 1 {
 		//scale down the container with min cpu usage
-		err := StopContainerByIdOrName(containerWithMinCPUUsage)
-		if err != nil {
-			logrus.Error("Error stoping container | err ", err)
-		}
+		return containerWithMinCPUUsage, avgCPUUsage
 	}
+	return "", 0
 }

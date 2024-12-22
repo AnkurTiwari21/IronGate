@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	// dockercontainer "github.com/AnkurTiwari21/DockerContainer"
 	"github.com/AnkurTiwari21/containerhandler"
@@ -20,15 +21,20 @@ func main() {
 	//make any instance of the reverse proxy
 	rp := proxy.ReverseProxy{
 		Routes: map[string][]string{
-			"localhost:8080": {"core"},
+			"localhost:8080": {},
 		},
 		MatchMaking: map[string]int{
 			"localhost:8080": 0,
 		},
-		RequestPerContainerPerSecond: map[string]int{
-			"core": 0,
-		},
+		RequestPerContainerPerSecond: map[string]int{},
 	}
+
+	containerhandler.RunContainerFromImageInBackground("testserver", "ankur-net", "core")
+	rp.Add("localhost:8080", "core")
+
+	rp.Mu.Lock()
+	rp.RequestPerContainerPerSecond["core"] = 0
+	rp.Mu.Unlock()
 
 	im := mapping.ImageMapping{
 		Mapping: map[string]string{
@@ -41,6 +47,36 @@ func main() {
 			"localhost:8080": 5050,
 		},
 	}
+
+	//perform cleanup of unused container here
+	//using go routine to do process async
+	//using time.NewTicker to do in a constant interval
+	//default time for checking is 5min
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				logrus.Info("Checking for unused containers....")
+				for url, containers := range rp.Routes {
+					containerToBeRemoved, avgCPUUsage := containerhandler.ScaleDownContainers(containers)
+					if containerToBeRemoved != "" {
+						err := containerhandler.StopContainerByIdOrName(containerToBeRemoved)
+						logrus.WithFields(logrus.Fields{
+							"container": containerToBeRemoved,
+							"avg_cpu":   avgCPUUsage,
+						}).Info("Scaling down container due to low average CPU utilization")
+
+						if err != nil {
+							logrus.Error("Error stoping container | err ", err)
+						}
+						rp.RemoveContainer(url,containerToBeRemoved)
+					}
+				}
+			}
+		}
+	}()
 
 	//basic http listener to listen at all the path and we will redirect the traffic based on subdomain
 	r := gin.Default()
@@ -66,10 +102,6 @@ func main() {
 }
 
 func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string, rp *proxy.ReverseProxy, im *mapping.ImageMapping, pm *mapping.PortMapping) {
-	// for {
-
-	// 	rp.FindMatch(requestedHost, im)
-	// }
 	targetContainer := rp.FindMatch(requestedHost, im)
 	logrus.Infof("| Routing request to conatiner %s |", targetContainer)
 	rp.View()
