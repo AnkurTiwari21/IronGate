@@ -5,31 +5,46 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 
 	// dockercontainer "github.com/AnkurTiwari21/DockerContainer"
 	"github.com/AnkurTiwari21/containerhandler"
+	"github.com/AnkurTiwari21/mapping"
 	proxy "github.com/AnkurTiwari21/proxy"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 )
 
-// "github.com/sirupsen/logrus"
-
 func main() {
 	//make any instance of the reverse proxy
 	rp := proxy.ReverseProxy{
 		Routes: map[string][]string{
-			"localhost:8080": {"my-container"},
+			"localhost:8080": {"core"},
 		},
 		MatchMaking: map[string]int{
 			"localhost:8080": 0,
+		},
+		RequestPerContainerPerSecond: map[string]int{
+			"core": 0,
+		},
+	}
+
+	im := mapping.ImageMapping{
+		Mapping: map[string]string{
+			"localhost:8080": "testserver",
+		},
+	}
+
+	pm := mapping.PortMapping{
+		Mapping: map[string]int{
+			"localhost:8080": 5050,
 		},
 	}
 
 	//basic http listener to listen at all the path and we will redirect the traffic based on subdomain
 	r := gin.Default()
-
+	// containerhandler.MonitorContainerWithID("core")
 	r.Any("/*path", func(c *gin.Context) {
 		// check if this domain is registered in the proxy
 		requestedHost := c.Request.Host
@@ -39,7 +54,7 @@ func main() {
 		logrus.Info(requestedHost)
 
 		if rp.Routes[requestedHost] != nil {
-			matchMakingAndCommunicate(c, requestedHost, path, &rp)
+			matchMakingAndCommunicate(c, requestedHost, path, &rp, &im, &pm)
 		} else {
 			c.JSON(http.StatusOK, gin.H{
 				"message": "route not found",
@@ -50,10 +65,17 @@ func main() {
 	r.Run(":8080")
 }
 
-func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string, rp *proxy.ReverseProxy) {
-	targetContainer := rp.FindMatch(requestedHost)
-	logrus.Infof("||Target Container: %s||", targetContainer)
-	targetAddress := "http://localhost:5050" + path
+func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string, rp *proxy.ReverseProxy, im *mapping.ImageMapping, pm *mapping.PortMapping) {
+	// for {
+
+	// 	rp.FindMatch(requestedHost, im)
+	// }
+	targetContainer := rp.FindMatch(requestedHost, im)
+	logrus.Infof("| Routing request to conatiner %s |", targetContainer)
+	rp.View()
+	portStr := strconv.Itoa(pm.Mapping[requestedHost])
+	targetAddress := "http://" + targetContainer + ":" + portStr + path
+	logrus.Info("target is ", targetAddress)
 	client := http.Client{}
 
 	req, err := http.NewRequest(c.Request.Method, targetAddress, c.Request.Body)
@@ -98,14 +120,17 @@ func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string
 
 			// Generate container ID and start the container
 			cid := uuid.New()
-			containerId := containerhandler.RunContainerFromImageInBackground("testserver", "ankur-net", cid.String())
+			containerId := containerhandler.RunContainerFromImageInBackground("testserver2", "ankur-net", cid.String())
 			logrus.Infof("UUID: %s, Container ID: %s", cid, containerId)
 
 			//register it in the reverse proxy
-			rp.Add(containerId+"."+requestedHost, containerId)
+			rp.Add(containerId+"."+requestedHost, cid.String())
+			im.Set(containerId+"."+requestedHost, "testserver2")
 
 			//the initial pointer will be at 0th index
+			rp.Mu.Lock()
 			rp.MatchMaking[containerId+"."+requestedHost] = 0
+			rp.Mu.Unlock()
 
 			rp.View()
 
@@ -139,5 +164,8 @@ func matchMakingAndCommunicate(c *gin.Context, requestedHost string, path string
 	_, err = c.Writer.Write(responseBody)
 	if err != nil {
 		logrus.Errorf("Error writing response: %v", err)
+	}
+	for key, val := range rp.RequestPerContainerPerSecond {
+		logrus.Infof("--container %s = cnt %s----", key, val)
 	}
 }

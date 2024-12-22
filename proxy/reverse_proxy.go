@@ -1,22 +1,35 @@
 package proxy
 
-import "github.com/sirupsen/logrus"
+import (
+	"sync"
+
+	"github.com/AnkurTiwari21/containerhandler"
+	"github.com/AnkurTiwari21/mapping"
+	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
+)
 
 // This struct will maintain all the routing info
 type ReverseProxy struct {
-	Routes      map[string][]string
-	MatchMaking map[string]int
+	Routes                       map[string][]string
+	MatchMaking                  map[string]int
+	RequestPerContainerPerSecond map[string]int
+	Mu                           sync.Mutex
 }
 
 func (r *ReverseProxy) Add(url string, containerName string) {
+	r.Mu.Lock()
 	allContainers := r.Routes[url]
 	allContainers = append(allContainers, containerName)
 	r.Routes[url] = allContainers
+	r.Mu.Unlock()
 	logrus.Infof("Container %s added for %s route", containerName, url)
 }
 
 func (r *ReverseProxy) RemoveRoute(url string) {
+	r.Mu.Lock()
 	delete(r.Routes, url)
+	r.Mu.Unlock()
 	logrus.Infof("Route %s removed!", url)
 }
 
@@ -38,11 +51,50 @@ func (r *ReverseProxy) View() {
 	}
 }
 
-func (r *ReverseProxy) FindMatch(url string) string {
-	//Implemented basic round robin
-	//TODO: what if container is turned off...how to manage the indexing there
-	//TODO: is round robin is good for this case?
-	containerToBeUsedForUrl := r.MatchMaking[url]
-	r.MatchMaking[url] = (containerToBeUsedForUrl + 1) % (len(r.Routes[url]))
-	return r.Routes[url][containerToBeUsedForUrl]
+func (r *ReverseProxy) FindMatch(url string, imageMapping *mapping.ImageMapping) string {
+	// using a resource based alocation method
+	// find avg cpu usage for that domain
+	// if avg cpu usage > 80 --> spin up another conatiner and route traffic there
+	// otherwise route traffic to coatiner with lowest cpu usage
+	// return the container id
+
+	avgCPUUsage := float64(0)
+	var containerWithMinCPUUsage string
+	minCPUUsage := float64(100)
+
+	for _, conatiner := range r.Routes[url] {
+		cpuUsage, err := containerhandler.MonitorContainerWithID(conatiner)
+		if err != nil {
+			logrus.Errorf("error getting stats for conatiner : %s | err ", conatiner, err)
+		} else {
+			avgCPUUsage += (cpuUsage)
+			if cpuUsage <= minCPUUsage {
+				// logrus.Info(cpuUsage)
+				if cpuUsage == minCPUUsage {
+					if containerWithMinCPUUsage != "" && r.RequestPerContainerPerSecond[conatiner] <= r.RequestPerContainerPerSecond[containerWithMinCPUUsage] {
+						containerWithMinCPUUsage = conatiner
+					}
+				} else {
+					minCPUUsage = cpuUsage
+					containerWithMinCPUUsage = conatiner
+				}
+			}
+
+		}
+	}
+	avgCPUUsage = avgCPUUsage / float64(len(r.Routes[url]))
+	if avgCPUUsage > 80 {
+		conatinerUUId := uuid.New()
+		containerhandler.RunContainerFromImageInBackground(imageMapping.Mapping[url], "ankur-net", conatinerUUId.String())
+		r.Add(url, conatinerUUId.String())
+		r.Mu.Lock()
+		r.RequestPerContainerPerSecond[conatinerUUId.String()] += 1
+		r.Mu.Unlock()
+		return conatinerUUId.String()
+	}
+	r.Mu.Lock()
+	r.RequestPerContainerPerSecond[containerWithMinCPUUsage] += 1
+	r.Mu.Unlock()
+	return containerWithMinCPUUsage
+	// return ""
 }
