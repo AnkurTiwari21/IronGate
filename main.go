@@ -1,21 +1,47 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
 	// dockercontainer "github.com/AnkurTiwari21/DockerContainer"
 	"github.com/AnkurTiwari21/containerhandler"
 	"github.com/AnkurTiwari21/mapping"
+	"github.com/AnkurTiwari21/migration"
 	proxy "github.com/AnkurTiwari21/proxy"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
+	"github.com/joho/godotenv"
 	"github.com/sirupsen/logrus"
 )
+
+func getClientIPByHeaders(req *http.Request) (ip string, err error) {
+
+	// Client could be behid a Proxy, so Try Request Headers (X-Forwarder)
+	ipSlice := []string{}
+
+	ipSlice = append(ipSlice, req.Header.Get("X-Forwarded-For"))
+	ipSlice = append(ipSlice, req.Header.Get("x-forwarded-for"))
+	ipSlice = append(ipSlice, req.Header.Get("X-FORWARDED-FOR"))
+
+	for _, v := range ipSlice {
+		logrus.Infof("debug: client request header check gives ip: %v", v)
+		if v != "" {
+			return v, nil
+		}
+	}
+	err = errors.New("error: Could not find clients IP address from the Request Headers")
+	return "", err
+
+}
 
 func main() {
 	//make any instance of the reverse proxy
@@ -53,7 +79,7 @@ func main() {
 	//using time.NewTicker to do in a constant interval
 	//default time for checking is 5min
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for {
 			select {
@@ -71,12 +97,22 @@ func main() {
 						if err != nil {
 							logrus.Error("Error stoping container | err ", err)
 						}
-						rp.RemoveContainer(url,containerToBeRemoved)
 					}
+					rp.RemoveContainer(url, containerToBeRemoved)
 				}
 			}
 		}
 	}()
+
+	//after succesfull setup init a redis connection to implement IP based blocking to prevent DDOS
+	err := godotenv.Load(".env")
+	if err != nil {
+		logrus.Error("Error loading .env file")
+		return
+	}
+	addr := os.Getenv("REDIS_ADDRESS")
+	pass := os.Getenv("REDIS_PASSWORD")
+	redisClient := migration.InitRedisClient(addr, pass)
 
 	//basic http listener to listen at all the path and we will redirect the traffic based on subdomain
 	r := gin.Default()
@@ -85,17 +121,58 @@ func main() {
 		// check if this domain is registered in the proxy
 		requestedHost := c.Request.Host
 		path := c.Request.RequestURI
-		// hostArray := strings.Split(requestedHost, ":")
 
 		logrus.Info(requestedHost)
-
-		if rp.Routes[requestedHost] != nil {
-			matchMakingAndCommunicate(c, requestedHost, path, &rp, &im, &pm)
-		} else {
+		userIP, err := getClientIPByHeaders(c.Request)
+		if err != nil {
+			logrus.Error("error in getting client ip | err ", err)
 			c.JSON(http.StatusOK, gin.H{
-				"message": "route not found",
+				"message": "try again",
 			})
+			return
 		}
+		logrus.Info("client ip ", userIP)
+		attemptsMadeTillNow, err := redisClient.Get(context.Background(), userIP).Result()
+
+		if err == redis.Nil {
+			//ip not present in redis
+			redisClient.Set(context.Background(), userIP, 1, 60*time.Second)
+			if rp.Routes[requestedHost] != nil {
+				matchMakingAndCommunicate(c, requestedHost, path, &rp, &im, &pm)
+			} else {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "route not found",
+				})
+			}
+		} else if err != nil {
+			logrus.Error("error getting data form redis | err ", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"message": "Try again after some time.",
+			})
+		} else {
+			attemptsTillNow, err := strconv.Atoi(attemptsMadeTillNow)
+			if err != nil {
+				logrus.Error("error converting attempts to int | err ", err)
+				return
+			}
+			//default check for 100 req/min/ip
+			if attemptsTillNow >= 100 {
+				redisClient.Set(context.Background(), userIP, attemptsTillNow, 5*60*time.Second)
+				c.JSON(http.StatusOK, gin.H{
+					"message": "You have been blocked! Try after some time.",
+				})
+			} else {
+				redisClient.Set(context.Background(), userIP, attemptsTillNow+1, 60*time.Second)
+				if rp.Routes[requestedHost] != nil {
+					matchMakingAndCommunicate(c, requestedHost, path, &rp, &im, &pm)
+				} else {
+					c.JSON(http.StatusOK, gin.H{
+						"message": "route not found",
+					})
+				}
+			}
+		}
+
 	})
 
 	r.Run(":8080")
