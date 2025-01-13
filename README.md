@@ -1,5 +1,7 @@
 # IronGate - A Dynamic Reverse Proxy for your Docker Containers 🐳
 
+<img width="1135" alt="Screenshot 2025-01-13 at 9 55 47 AM" src="https://github.com/user-attachments/assets/95da0781-209d-44f1-b62c-c8f239145e54" />
+
 ## 📋 Project Overview
 This project implements a **Reverse Proxy** with built-in **Load Balancing** and **Rate Limiting** features. The proxy efficiently distributes incoming client requests among backend servers while allowing for dynamic blocking of specific IP addresses.
 
